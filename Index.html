@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>داشبورد السكريبت</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, sans-serif; }
+    body { background: #0f172a; color: #e2e8f0; min-height: 100vh; padding: 20px; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { text-align: center; margin-bottom: 20px; color: #38bdf8; }
+    .login-box { background: #1e293b; padding: 30px; border-radius: 12px; max-width: 400px; margin: 100px auto; text-align: center; }
+    input, button, select { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: none; font-size: 16px; }
+    input { background: #334155; color: white; }
+    button { background: #0ea5e9; color: white; cursor: pointer; font-weight: bold; }
+    button:hover { background: #0284c7; }
+    button.danger { background: #ef4444; }
+    button.danger:hover { background: #dc2626; }
+    .hidden { display: none; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; background: #1e293b; border-radius: 12px; overflow: hidden; }
+    th, td { padding: 14px; text-align: right; border-bottom: 1px solid #334155; }
+    th { background: #0f172a; color: #38bdf8; }
+    .status { color: #22c55e; font-weight: bold; }
+    .kick-form { background: #1e293b; padding: 15px; border-radius: 10px; margin-top: 10px; }
+    .info { background: #1e293b; padding: 15px; border-radius: 10px; margin-bottom: 20px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- صفحة اللوجين -->
+    <div id="loginPage" class="login-box">
+      <h2>دخول الداشبورد</h2>
+      <input type="password" id="passwordInput" placeholder="كلمة السر">
+      <button onclick="login()">دخول</button>
+      <p id="loginError" style="color:#ef4444; margin-top:10px;"></p>
+    </div>
+
+    <!-- الداشبورد -->
+    <div id="dashboard" class="hidden">
+      <h1>داشبورد مراقبة السكريبت</h1>
+      
+      <div class="info">
+        <p>عدد اللاعبين الشغالين دلوقتي: <strong id="userCount">0</strong></p>
+        <button onclick="logout()" style="width:auto; padding:8px 16px; margin-top:10px;">تسجيل خروج</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>اسم اللاعب</th>
+            <th>User ID</th>
+            <th>مدة التشغيل</th>
+            <th>آخر ظهور</th>
+            <th>إجراءات</th>
+          </tr>
+        </thead>
+        <tbody id="usersTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let password = localStorage.getItem('dash_pass') || '';
+
+    function login() {
+      password = document.getElementById('passwordInput').value;
+      fetch('/api/users', {
+        headers: { 'x-dashboard-password': password }
+      })
+      .then(r => {
+        if (r.status === 401) {
+          document.getElementById('loginError').innerText = 'كلمة السر غلط';
+          return;
+        }
+        localStorage.setItem('dash_pass', password);
+        document.getElementById('loginPage').classList.add('hidden');
+        document.getElementById('dashboard').classList.remove('hidden');
+        loadUsers();
+        setInterval(loadUsers, 5000); // تحديث كل 5 ثواني
+      });
+    }
+
+    function logout() {
+      localStorage.removeItem('dash_pass');
+      location.reload();
+    }
+
+    // لو فيه باسورد محفوظ جرب يدخل تلقائي
+    if (password) {
+      document.getElementById('passwordInput').value = password;
+      login();
+    }
+
+    function loadUsers() {
+      fetch('/api/users', {
+        headers: { 'x-dashboard-password': password }
+      })
+      .then(r => r.json())
+      .then(data => {
+        const tbody = document.getElementById('usersTable');
+        tbody.innerHTML = '';
+        document.getElementById('userCount').innerText = data.users.length;
+
+        data.users.forEach(user => {
+          const minutes = Math.floor(user.onlineFor / 60);
+          const seconds = user.onlineFor % 60;
+          const lastSeen = Math.floor((Date.now() - user.lastSeen) / 1000) + ' ثانية';
+
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${user.username}</td>
+            <td>${user.userId}</td>
+            <td>${minutes} دقيقة و ${seconds} ثانية</td>
+            <td class="status">${lastSeen}</td>
+            <td>
+              <button class="danger" onclick="showKickForm('\( {user.userId}', ' \){user.username}')">طرد</button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      });
+    }
+
+    function showKickForm(userId, username) {
+      const reason = prompt(`سبب طرد ${username}:`, 'استخدام غير مصرح');
+      if (reason === null) return;
+
+      const duration = prompt('مدة الطرد بالدقائق (اكتب 0 للطرد الدائم):', '60');
+      if (duration === null) return;
+
+      const permanent = duration === '0';
+      const durationMinutes = permanent ? 0 : parseInt(duration) || 60;
+
+      fetch('/api/kick', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-dashboard-password': password
+        },
+        body: JSON.stringify({
+          userId,
+          reason,
+          durationMinutes,
+          permanent
+        })
+      })
+      .then(r => r.json())
+      .then(() => {
+        alert('تم الطرد بنجاح');
+        loadUsers();
+      });
+    }
+  </script>
+</body>
+</html>
