@@ -1,109 +1,115 @@
-const express = require('express');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-const path = require('path');
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+-- ========== إعدادات ==========
+local DASHBOARD_URL = "https://robloxa.onrender.com"
+local API_KEY = "my-secret-key-2026"
+local HEARTBEAT_INTERVAL = 10
 
-// ========== إعدادات مهمة ==========
-const DASHBOARD_PASSWORD = "123456";        // غير دي لكلمة سر قوية
-const API_KEY = "my-secret-key-2026";       // مفتاح السكريبت (حطه في روبلوكس كمان)
+local LocalPlayer = Players.LocalPlayer
+local isClient = LocalPlayer \~= nil
 
-// تخزين البيانات في الذاكرة
-let activeUsers = {};      // { userId: { username, lastSeen, joinTime } }
-let kicks = {};            // { userId: { reason, expireAt, permanent } }
+-- ========== دالة إرسال النبضة ==========
+local function sendHeartbeat()
+	local player = isClient and LocalPlayer or nil
+	if not player and not isClient then
+		-- لو سيرفر، هنبعت لكل لاعب لوحده
+		return
+	end
 
-app.use(cors());
-app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, 'public')));
+	local userId = isClient and tostring(LocalPlayer.UserId) or nil
+	local username = isClient and LocalPlayer.Name or nil
 
-// ========== حماية الداشبورد ==========
-function checkAuth(req, res, next) {
-  const password = req.headers['x-dashboard-password'] || req.query.password;
-  if (password === DASHBOARD_PASSWORD) {
-    next();
-  } else {
-    res.status(401).json({ error: "Unauthorized" });
-  }
-}
+	local success, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = DASHBOARD_URL .. "/api/heartbeat",
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["x-api-key"] = API_KEY
+			},
+			Body = HttpService:JSONEncode({
+				userId = userId,
+				username = username
+			})
+		})
+	end)
 
-// ========== API للسكريبت بتاع روبلوكس ==========
+	if success and response and response.Success then
+		local data = HttpService:JSONDecode(response.Body)
+		
+		if data.kicked then
+			local reason = data.reason or "تم طردك من قبل الأدمن"
+			
+			-- طريقة طرد قوية (تشتغل في الإكسكيوتر)
+			if isClient then
+				-- طريقة 1: طرد عادي
+				pcall(function()
+					LocalPlayer:Kick(reason)
+				end)
+				
+				-- طريقة 2: لو الطرد العادي مقدرش (بعض الإكسكيوترز)
+				task.wait(0.5)
+				pcall(function()
+					game:Shutdown()
+				end)
+				
+				-- طريقة 3: كراش بسيط
+				while true do end
+			end
+		end
+	else
+		warn("[Dashboard] Heartbeat failed")
+	end
+end
 
-// نبضة (Heartbeat)
-app.post('/api/heartbeat', (req, res) => {
-  const key = req.headers['x-api-key'];
-  if (key !== API_KEY) {
-    return res.status(403).json({ error: "Invalid API Key" });
-  }
+-- ========== تشغيل ==========
+if isClient then
+	-- نسخة Client (للإكسكيوتر)
+	task.spawn(function()
+		while true do
+			sendHeartbeat()
+			task.wait(HEARTBEAT_INTERVAL)
+		end
+	end)
+	print("[Dashboard] Client script loaded")
+else
+	-- نسخة Server
+	local function startForPlayer(player)
+		task.spawn(function()
+			while player and player.Parent do
+				local success, response = pcall(function()
+					return HttpService:RequestAsync({
+						Url = DASHBOARD_URL .. "/api/heartbeat",
+						Method = "POST",
+						Headers = {
+							["Content-Type"] = "application/json",
+							["x-api-key"] = API_KEY
+						},
+						Body = HttpService:JSONEncode({
+							userId = tostring(player.UserId),
+							username = player.Name
+						})
+					})
+				end)
 
-  const { userId, username } = req.body;
-  if (!userId || !username) {
-    return res.status(400).json({ error: "Missing data" });
-  }
+				if success and response and response.Success then
+					local data = HttpService:JSONDecode(response.Body)
+					if data.kicked then
+						player:Kick(data.reason or "تم طردك من قبل الأدمن")
+					end
+				end
+				task.wait(HEARTBEAT_INTERVAL)
+			end
+		end)
+	end
 
-  const now = Date.now();
-
-  // تحديث المستخدم
-  activeUsers[userId] = {
-    username,
-    lastSeen: now,
-    joinTime: activeUsers[userId]?.joinTime || now
-  };
-
-  // فحص لو فيه طرد
-  const kickInfo = kicks[userId];
-  if (kickInfo) {
-    if (kickInfo.permanent || kickInfo.expireAt > now) {
-      return res.json({
-        kicked: true,
-        reason: kickInfo.reason || "تم طردك من قبل الأدمن",
-        remaining: kickInfo.permanent ? null : Math.ceil((kickInfo.expireAt - now) / 1000)
-      });
-    } else {
-      // انتهى وقت الطرد المؤقت
-      delete kicks[userId];
-    }
-  }
-
-  res.json({ kicked: false });
-});
-
-// ========== API للداشبورد ==========
-
-// جلب قائمة المستخدمين
-app.get('/api/users', checkAuth, (req, res) => {
-  const now = Date.now();
-  const users = [];
-
-  // حذف اللي ما بعتش نبضة من أكتر من 45 ثانية
-  for (const [userId, data] of Object.entries(activeUsers)) {
-    if (now - data.lastSeen > 45000) {
-      delete activeUsers[userId];
-    } else {
-      users.push({
-        userId,
-        username: data.username,
-        lastSeen: data.lastSeen,
-        joinTime: data.joinTime,
-        onlineFor: Math.floor((now - data.joinTime) / 1000)
-      });
-    }
-  }
-
-  res.json({ users, kicks });
-});
-
-// طرد لاعب
-app.post('/api/kick', checkAuth, (req, res) => {
-  const { userId, reason, durationMinutes, permanent } = req.body;
-
-  if (!userId) {
-    return res.status(400).json({ error: "Missing userId" });
-  }
-
-  const now = Date.now();
-  kicks[userId] = {
+	Players.PlayerAdded:Connect(startForPlayer)
+	for _, player in ipairs(Players:GetPlayers()) do
+		startForPlayer(player)
+	end
+	print("[Dashboard] Server script loaded")
+end  kicks[userId] = {
     reason: reason || "تم طردك من قبل الأدمن",
     permanent: permanent === true,
     expireAt: permanent ? null : now + (durationMinutes || 60) * 60 * 1000
